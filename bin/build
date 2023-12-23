@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+APP="builder"
+
+# ╭────────────╮
+# │ DOCKERFILE │
+# ╰────────────╯
+
+if ! git-is-repo; then
+    exit 1
+fi
+
+cd $(git-get-dir)
+
+if ! [[ -f Dockerfile ]] || [[ -f Containerfile ]]; then
+    exit 1
+fi
+
+# ╭─────╮
+# │ MIX │
+# ╰─────╯
+
+if ! [[ -d rel/ ]]; then
+    echo "run: mix phx.gen.release"
+    exit 1
+fi
+
+# ╭───────╮
+# │ IMAGE │
+# ╰───────╯
+
+GIT_BRANCH=$(git-get-branch)
+
+if git-is-clean; then
+    GIT_COMMIT=$(git-get-hash)
+    TAG="${GIT_BRANCH}_$(echo $GIT_COMMIT | cut -c-5)"
+else
+    GIT_COMMIT="none"
+    TAG="${GIT_BRANCH}_dev"
+fi
+
+IMAGE="registry.tell.nu/$APP:$TAG"
+
+# ╭───────╮
+# │ BUILD │
+# ╰───────╯
+
+if ! podman build \
+        --tag $IMAGE \
+        --label "application=$APP" \
+        --label "git=$GIT_COMMIT" \
+        .; then
+    exit 1
+fi
+    
+pp-fg blue; echo "$IMAGE"; pp-fg

@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+
+APP="builder"
+
+# ╭──────────────╮
+# │ SELECT IMAGE │
+# ╰──────────────╯
+
+IMAGE=$( \
+    podman image ls -f "label=application=$APP" \
+    | tail -n +2 \
+    | fzf \
+    | awk -F ' ' '{print $1 ":" $2}' \
+)
+
+if [[ -z "$IMAGE" ]]; then
+    exit 1
+fi
+
+if ! GIT=$(podman image inspect $IMAGE --format '{{.Labels.git}}'); then
+    exit 1
+fi
+
+# ╭────────────╮
+# │ SUB-DOMAIN │
+# ╰────────────╯
+
+SUB=$1
+
+if [[ -z "$SUB" ]]; then
+    SUB="${APP}_$(podman inspect $IMAGE --format '{{.ID}}' | cut -c-5)"
+fi
+
+DOMAIN="$SUB.tell.nu"
+
+# ╭───────────╮
+# │ AUTH WALL │
+# ╰───────────╯
+
+AUTH_WALL=" "
+
+if [[ "$SUB" != "$APP" ]]; then
+    HTPASS=$(htpasswd -Bbn $APP $APP)
+    AUTH_WALL=" --label=traefik.http.middlewares.${SUB}.basicauth.users=${HTPASS} "
+    AUTH_WALL+="--label=traefik.http.middlewares.${SUB}.basicauth.headerField=X-WebAuth-User "
+    AUTH_WALL+="--label=traefik.http.middlewares.${SUB}.basicauth.realm=${SUB} "
+    AUTH_WALL+="--label=traefik.http.routers.${SUB}.middlewares=${SUB}@docker "
+fi
+
+# ╭───────────╮
+# │ CONTINUE? │
+# ╰───────────╯
+
+echo -n "Start $(pp-fg red)${IMAGE}$(pp-fg) on domain $(pp-fg red)${DOMAIN}$(pp-fg)? "
+read -p "[y/N]: " yn
+case $yn in
+    [Yy]*) :;;  
+    *) exit  0;;
+esac
+
+# ╭────────────╮
+# │ PUSH IMAGE │
+# ╰────────────╯
+
+pp-fg blue; echo "[ PUSH IMAGE ]"; pp-fg
+
+if ! podman push $IMAGE; then
+    exit 1
+fi
+
+# ╭────────────╮
+# │ PULL IMAGE │
+# ╰────────────╯
+
+pp-fg blue; echo "[ PULL IMAGE ]"; pp-fg
+
+if ! podman -r pull $IMAGE; then
+    exit 1
+fi
+
+# ╭──────────╮
+# │ DATABASE │
+# ╰──────────╯
+
+DB_NAME="$SUB"
+DB_USER="$SUB"
+DB_PASS=$(gen-random-string 64)
+
+pp-fg blue; echo "[ DATABASE ]"; pp-fg
+
+psql-vm-exec <<-EOF
+SELECT 'CREATE DATABASE $DB_NAME' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$DB_NAME')\gexec
+\c $DB_NAME
+DO
+\$\$
+    BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$DB_USER') THEN
+            CREATE USER "$DB_USER" WITH ENCRYPTED PASSWORD '$DB_PASS';
+            GRANT pg_read_all_data TO "$DB_USER";
+            GRANT pg_write_all_data TO "$DB_USER";
+            GRANT CREATE ON DATABASE "$DB_NAME" TO "$DB_USER";
+            GRANT CREATE ON SCHEMA public TO "$DB_USER";
+        ELSE
+            ALTER USER "$DB_USER" WITH ENCRYPTED PASSWORD '$DB_PASS';
+        END IF;
+    END
+\$\$;
+EOF
+
+# ╭─────╮
+# │ ENV │
+# ╰─────╯
+
+PHX_SECRET_KEY_BASE=$(gen-random-string 64)
+
+# ╭────────────╮
+# │ MIGRATIONS │
+# ╰────────────╯
+
+pp-fg blue; echo "[ MIGRATIONS ]"; pp-fg
+
+podman -r run \
+    --name "${SUB}_migrate" \
+    --rm \
+    --network='db' \
+    --env "SECRET_KEY_BASE=$PHX_SECRET_KEY_BASE" \
+    --env "DATABASE_URL=ecto://$DB_USER:$DB_PASS@postgres/$DB_NAME" \
+    "$IMAGE" /app/bin/migrate
+
+
+# ╭───────────╮
+# │ CONTAINER │
+# ╰───────────╯
+
+pp-fg blue; echo "[ CONTAINER ]"; pp-fg
+
+podman -r run \
+    -d \
+    --name $SUB \
+    --restart=always \
+    --replace \
+    --network='traefik' \
+    --network='db' \
+    --env "PHX_HOST=$DOMAIN" \
+    --env "DATABASE_URL=ecto://$DB_USER:$DB_PASS@postgres/$DB_NAME" \
+    --env "SECRET_KEY_BASE=$PHX_SECRET_KEY_BASE" \
+    --label 'traefik.enable=true' \
+    --label "traefik.http.routers.$SUB.entrypoints=websecure" \
+    --label "traefik.http.routers.$SUB.rule=Host(\`$DOMAIN\`)" \
+    --label "traefik.http.routers.$SUB.tls=true" \
+    $AUTH_WALL \
+    --label "application=$APP" \
+    --label "git=$GIT" \
+    "$IMAGE"
+
+# ╭──────╮
+# │ LOGS │
+# ╰──────╯
+
+pp-fg blue; echo "[ LOGS ]"; pp-fg
+
+podman -r logs -f $SUB
