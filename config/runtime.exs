@@ -21,6 +21,16 @@ if System.get_env("PHX_SERVER") do
 end
 
 if config_env() == :prod do
+
+  admin_password =
+    System.get_env("ADMIN_PASSWORD") ||
+      raise """
+      environment variable ADMIN_PASSWORD is missing.
+      """
+
+  config :builder,
+    admin_password: admin_password
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """

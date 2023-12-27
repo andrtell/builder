@@ -24,6 +24,17 @@
     </div>
   </div>
 </header>
+
+<%= if !Builder.Accounts.User.is_role(@user, "anon") do %>
+  <.link
+    href={~p"/users/logout"}
+    method="delete"
+    class="text-[0.8125rem] leading-6 text-zinc-900 font-semibold hover:text-zinc-700"
+  >
+    Log out
+  </.link>
+<% end %>
+
 <main class="px-4 py-20 sm:px-6 lg:px-8">
   <div class="mx-auto max-w-2xl">
     <.flash_group flash={@flash} />

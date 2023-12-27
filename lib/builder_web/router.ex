@@ -1,6 +1,9 @@
 defmodule BuilderWeb.Router do
   use BuilderWeb, :router
 
+  import BuilderWeb.Plugs.Auth
+  import BuilderWeb.Plugs.Debug
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -8,6 +11,8 @@ defmodule BuilderWeb.Router do
     plug :put_root_layout, html: {BuilderWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    plug :auth_fetch_user
+    plug :debug
   end
 
   pipeline :api do
@@ -18,6 +23,33 @@ defmodule BuilderWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+  end
+
+  scope "/", BuilderWeb do
+    pipe_through [:browser]
+
+    delete "/users/logout", UserSessionController, :delete
+  end
+
+  scope "/", BuilderWeb do
+    pipe_through [:browser, :auth_redirect_if_admin]
+
+    live_session :anon,
+      on_mount: [{BuilderWeb.OnMount, :redirect_if_admin}] do
+      live "/login", LoginLive, :new
+    end
+
+    post "/users/login", UserSessionController, :create
+  end
+
+  scope "/", BuilderWeb do
+    pipe_through [:browser, :auth_redirect_if_anon]
+
+    live_session :admin,
+      on_mount: [{BuilderWeb.OnMount, :redirect_if_anon}] do
+      live "/admin", AdminLive, :new
+    end
   end
 
   # Other scopes may use custom stacks.

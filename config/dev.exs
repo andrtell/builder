@@ -1,5 +1,9 @@
 import Config
 
+# Simple auth
+config :builder,  
+  admin_password: "admin"
+
 # Configure your database
 config :builder, Builder.Repo,
   username: "postgres",
